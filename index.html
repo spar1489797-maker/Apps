@@ -1,361 +1,245 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sliding Puzzle</title>
+  <!-- Tailwind (CDN, fine for demos) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900">
+  <div id="root"></div>
 
-// Sliding Puzzle Game (3x3 / 4x4) with keyboard, mouse, and swipe controls.
-// URL supports shareable params: ?size=4&seed=123456 — sharing the link reproduces the same board.
-// Handy controls: Click/tap tile to move, Arrow keys / WASD, swipe. Undo, Reset, New Game.
+  <!-- React 18 UMD + Babel (lets us write JSX in-browser) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-function useQueryParam(key, fallback) {
-  const search = typeof window !== "undefined" ? window.location.search : "";
-  return useMemo(() => {
-    const params = new URLSearchParams(search);
-    const v = params.get(key);
-    return v ?? fallback;
-  }, [search, key, fallback]);
-}
+  <script type="text/babel">
+    const {useEffect, useMemo, useRef, useState} = React;
 
-// Simple deterministic PRNG (LCG) so the same seed => same shuffle
-function createLCG(seed) {
-  let state = seed >>> 0;
-  return () => {
-    state = (1664525 * state + 1013904223) >>> 0;
-    return state / 2 ** 32;
-  };
-}
-
-function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
-
-function coords(index, size) {
-  return { r: Math.floor(index / size), c: index % size };
-}
-
-function indexOf(r, c, size) { return r * size + c; }
-
-function isSolved(arr) {
-  const n = arr.length;
-  for (let i = 0; i < n - 1; i++) if (arr[i] !== i + 1) return false;
-  return arr[n - 1] === 0; // blank at end
-}
-
-function generateBoard(size, seed) {
-  // Start from solved, then do many random valid moves using seeded RNG.
-  const prng = createLCG(seed);
-  const board = Array.from({ length: size * size }, (_, i) => (i + 1) % (size * size));
-  let blank = size * size - 1;
-  let { r, c } = coords(blank, size);
-  const moves = [ [1,0], [-1,0], [0,1], [0,-1] ];
-  const steps = Math.max(200, size * size * 50);
-  for (let i = 0; i < steps; i++) {
-    const [dr, dc] = moves[Math.floor(prng() * moves.length)];
-    const nr = r + dr, nc = c + dc;
-    if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
-    const ni = indexOf(nr, nc, size);
-    // swap with blank
-    [board[blank], board[ni]] = [board[ni], board[blank]];
-    r = nr; c = nc; blank = ni;
-  }
-  return board;
-}
-
-function moveBoard(board, size, dir) {
-  // dir: 'up','down','left','right' in terms of moving the blank visually (arrow direction pressed)
-  const newBoard = board.slice();
-  const blank = newBoard.indexOf(0);
-  const { r, c } = coords(blank, size);
-  let nr = r, nc = c;
-  if (dir === 'up') nr = r + 1; // move tile down into blank, visually blank goes up
-  if (dir === 'down') nr = r - 1;
-  if (dir === 'left') nc = c + 1;
-  if (dir === 'right') nc = c - 1;
-  if (nr < 0 || nr >= size || nc < 0 || nc >= size) return null;
-  const ni = indexOf(nr, nc, size);
-  newBoard[blank] = newBoard[ni];
-  newBoard[ni] = 0;
-  return newBoard;
-}
-
-function tryTileClick(board, size, tileIndex) {
-  const blank = board.indexOf(0);
-  const { r: br, c: bc } = coords(blank, size);
-  const { r, c } = coords(tileIndex, size);
-  if ((r === br && Math.abs(c - bc) === 1) || (c === bc && Math.abs(r - br) === 1)) {
-    const newBoard = board.slice();
-    [newBoard[blank], newBoard[tileIndex]] = [newBoard[tileIndex], newBoard[blank]];
-    return newBoard;
-  }
-  return null;
-}
-
-function useStopwatch(running) {
-  const [ms, setMs] = useState(0);
-  const lastRef = useRef(null);
-  useEffect(() => {
-    if (!running) { lastRef.current = null; return; }
-    let raf;
-    const tick = (t) => {
-      if (lastRef.current == null) lastRef.current = t;
-      const delta = t - lastRef.current;
-      lastRef.current = t;
-      setMs((v) => v + delta);
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [running]);
-  return ms;
-}
-
-function formatTime(ms) {
-  const total = Math.floor(ms / 1000);
-  const s = total % 60;
-  const m = Math.floor(total / 60) % 60;
-  const h = Math.floor(total / 3600);
-  const pad = (n) => String(n).padStart(2, '0');
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-}
-
-function useSwipe(onDir) {
-  const start = useRef(null);
-  function onTouchStart(e){
-    const t = e.touches[0];
-    start.current = { x: t.clientX, y: t.clientY };
-  }
-  function onTouchEnd(e){
-    if (!start.current) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - start.current.x;
-    const dy = t.clientY - start.current.y;
-    const adx = Math.abs(dx); const ady = Math.abs(dy);
-    if (Math.max(adx, ady) < 25) return; // small moves ignored
-    if (adx > ady) onDir(dx > 0 ? 'right' : 'left');
-    else onDir(dy > 0 ? 'down' : 'up');
-    start.current = null;
-  }
-  return { onTouchStart, onTouchEnd };
-}
-
-export default function App() {
-  const sizeParam = parseInt(useQueryParam('size', '4'), 10);
-  const seedParam = useQueryParam('seed', null);
-  const initialSize = clamp(Number.isFinite(sizeParam) ? sizeParam : 4, 3, 6);
-  const initialSeed = seedParam ? parseInt(seedParam, 10) : Math.floor(Math.random() * 1e9);
-
-  const [size, setSize] = useState(initialSize);
-  const [seed, setSeed] = useState(initialSeed);
-  const [board, setBoard] = useState(() => generateBoard(initialSize, initialSeed));
-  const [moves, setMoves] = useState(0);
-  const [history, setHistory] = useState([]); // stack of boards
-  const [won, setWon] = useState(false);
-  const [started, setStarted] = useState(false);
-
-  const timeMs = useStopwatch(started && !won);
-
-  // Update URL when size/seed changes
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    url.searchParams.set('size', String(size));
-    url.searchParams.set('seed', String(seed));
-    window.history.replaceState({}, '', url.toString());
-  }, [size, seed]);
-
-  // Win detection
-  useEffect(() => {
-    if (isSolved(board)) {
-      setWon(true);
-      setStarted(false);
+    // --- helpers ---
+    function useQueryParam(key, fallback){
+      const search = typeof window !== "undefined" ? window.location.search : "";
+      return useMemo(()=>{
+        const params = new URLSearchParams(search);
+        const v = params.get(key);
+        return v ?? fallback;
+      },[search,key,fallback]);
     }
-  }, [board]);
-
-  function resetTo(seedVal = seed, sizeVal = size) {
-    const b = generateBoard(sizeVal, seedVal);
-    setBoard(b);
-    setMoves(0);
-    setHistory([]);
-    setWon(false);
-    setStarted(false);
-    setSeed(seedVal);
-    setSize(sizeVal);
-  }
-
-  function newGame() {
-    const newSeed = (typeof crypto !== 'undefined' && crypto.getRandomValues)
-      ? crypto.getRandomValues(new Uint32Array(1))[0]
-      : Math.floor(Math.random() * 1e9);
-    resetTo(newSeed, size);
-  }
-
-  function changeSize(newSize) {
-    const n = clamp(newSize, 3, 6);
-    resetTo(seed, n);
-  }
-
-  function handleMove(dir) {
-    const next = moveBoard(board, size, dir);
-    if (next) {
-      if (!started) setStarted(true);
-      setHistory((h) => [...h, board]);
-      setBoard(next);
-      setMoves((m) => m + 1);
+    function createLCG(seed){ let s = seed >>> 0; return ()=>((s=(1664525*s+1013904223)>>>0)/2**32); }
+    const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+    const coords=(i,size)=>({r:Math.floor(i/size), c:i%size});
+    const indexOf=(r,c,size)=>r*size+c;
+    function isSolved(arr){ for(let i=0;i<arr.length-1;i++) if(arr[i]!==i+1) return false; return arr[arr.length-1]===0; }
+    function generateBoard(size, seed){
+      const prng=createLCG(seed);
+      const board=Array.from({length:size*size},(_,i)=>(i+1)%(size*size));
+      let blank=size*size-1; let {r,c}=coords(blank,size);
+      const moves=[[1,0],[-1,0],[0,1],[0,-1]]; const steps=Math.max(200,size*size*50);
+      for(let i=0;i<steps;i++){
+        const [dr,dc]=moves[Math.floor(prng()*moves.length)];
+        const nr=r+dr,nc=c+dc; if(nr<0||nr>=size||nc<0||nc>=size) continue;
+        const ni=indexOf(nr,nc,size); [board[blank],board[ni]]=[board[ni],board[blank]];
+        r=nr; c=nc; blank=ni;
+      }
+      return board;
     }
-  }
-
-  function undo() {
-    setHistory((h) => {
-      if (h.length === 0) return h;
-      const prev = h[h.length - 1];
-      setBoard(prev);
-      setMoves((m) => Math.max(0, m - 1));
-      return h.slice(0, -1);
-    });
-  }
-
-  function copyLink() {
-    if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    navigator.clipboard?.writeText(url.toString());
-  }
-
-  // Keyboard controls
-  useEffect(() => {
-    function onKey(e) {
-      if (won) return;
-      const key = e.key.toLowerCase();
-      if (["arrowup","w"].includes(key)) { e.preventDefault(); handleMove('up'); }
-      else if (["arrowdown","s"].includes(key)) { e.preventDefault(); handleMove('down'); }
-      else if (["arrowleft","a"].includes(key)) { e.preventDefault(); handleMove('left'); }
-      else if (["arrowright","d"].includes(key)) { e.preventDefault(); handleMove('right'); }
-      else if (key === 'u') { e.preventDefault(); undo(); }
+    function moveBoard(board,size,dir){
+      const b=board.slice(); const blank=b.indexOf(0); const {r,c}=coords(blank,size);
+      let nr=r, nc=c;
+      if(dir==='up') nr=r+1; if(dir==='down') nr=r-1; if(dir==='left') nc=c+1; if(dir==='right') nc=c-1;
+      if(nr<0||nr>=size||nc<0||nc>=size) return null;
+      const ni=indexOf(nr,nc,size); b[blank]=b[ni]; b[ni]=0; return b;
     }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [board, size, won]);
+    function tryTileClick(board,size,tileIndex){
+      const blank=board.indexOf(0);
+      const {r:br,c:bc}=coords(blank,size); const {r,c}=coords(tileIndex,size);
+      if((r===br&&Math.abs(c-bc)===1)||(c===bc&&Math.abs(r-br)===1)){
+        const nb=board.slice(); [nb[blank],nb[tileIndex]]=[nb[tileIndex],nb[blank]]; return nb;
+      }
+      return null;
+    }
+    function useStopwatch(running){
+      const [ms,setMs]=useState(0); const lastRef=useRef(null);
+      useEffect(()=>{
+        if(!running){ lastRef.current=null; return; }
+        let raf; const tick=(t)=>{ if(lastRef.current==null) lastRef.current=t; const d=t-lastRef.current; lastRef.current=t; setMs(v=>v+d); raf=requestAnimationFrame(tick); };
+        raf=requestAnimationFrame(tick); return ()=>cancelAnimationFrame(raf);
+      },[running]);
+      return ms;
+    }
+    const formatTime=(ms)=>{ const total=Math.floor(ms/1000); const s=total%60; const m=Math.floor(total/60)%60; const h=Math.floor(total/3600); const pad=n=>String(n).padStart(2,'0'); return h>0?`${h}:${pad(m)}:${pad(s)}`:`${m}:${pad(s)}`; };
+    function useSwipe(onDir){
+      const start=useRef(null);
+      function onTouchStart(e){ const t=e.touches[0]; start.current={x:t.clientX,y:t.clientY}; }
+      function onTouchEnd(e){ if(!start.current) return; const t=e.changedTouches[0]; const dx=t.clientX-start.current.x; const dy=t.clientY-start.current.y; const adx=Math.abs(dx), ady=Math.abs(dy); if(Math.max(adx,ady)<25) return; onDir(adx>ady?(dx>0?'right':'left'):(dy>0?'down':'up')); start.current=null; }
+      return {onTouchStart,onTouchEnd};
+    }
 
-  const gridStyle = {
-    gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))`,
-    gridTemplateRows: `repeat(${size}, minmax(0, 1fr))`,
-  };
+    function App(){
+      const sizeParam=parseInt(useQueryParam('size','4'),10);
+      const seedParam=useQueryParam('seed',null);
+      const initialSize=clamp(Number.isFinite(sizeParam)?sizeParam:4,3,6);
+      const initialSeed=seedParam?parseInt(seedParam,10):Math.floor(Math.random()*1e9);
 
-  const { onTouchStart, onTouchEnd } = useSwipe((dir) => handleMove(dir));
+      const [size,setSize]=useState(initialSize);
+      const [seed,setSeed]=useState(initialSeed);
+      const [board,setBoard]=useState(()=>generateBoard(initialSize,initialSeed));
+      const [moves,setMoves]=useState(0);
+      const [history,setHistory]=useState([]);
+      const [won,setWon]=useState(false);
+      const [started,setStarted]=useState(false);
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 text-slate-100 flex items-center justify-center p-4">
-      <div className="w-full max-w-3xl">
-        <header className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Sliding Puzzle ⚙️</h1>
-          <div className="text-sm opacity-80">Shareable seed: <span className="font-mono">{seed}</span></div>
-        </header>
+      const timeMs=useStopwatch(started && !won);
 
-        <div className="grid md:grid-cols-3 gap-4 mb-4">
-          <div className="md:col-span-2 bg-slate-900/50 rounded-2xl p-4 shadow">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex gap-3">
-                <div className="px-3 py-1 rounded-full bg-slate-800/60">Moves: <span className="font-semibold">{moves}</span></div>
-                <div className="px-3 py-1 rounded-full bg-slate-800/60">Time: <span className="font-semibold">{formatTime(timeMs)}</span></div>
+      useEffect(()=>{ if(typeof window==='undefined') return; const url=new URL(window.location.href); url.searchParams.set('size',String(size)); url.searchParams.set('seed',String(seed)); window.history.replaceState({},'',url.toString()); },[size,seed]);
+
+      useEffect(()=>{ if(isSolved(board)){ setWon(true); setStarted(false); } },[board]);
+
+      function resetTo(seedVal=seed,sizeVal=size){
+        const b=generateBoard(sizeVal,seedVal);
+        setBoard(b); setMoves(0); setHistory([]); setWon(false); setStarted(false); setSeed(seedVal); setSize(sizeVal);
+      }
+      function newGame(){
+        const newSeed=(typeof crypto!=='undefined'&&crypto.getRandomValues)?crypto.getRandomValues(new Uint32Array(1))[0]:Math.floor(Math.random()*1e9);
+        resetTo(newSeed,size);
+      }
+      function changeSize(n){ resetTo(seed, clamp(n,3,6)); }
+      function handleMove(dir){
+        const next=moveBoard(board,size,dir);
+        if(next){ if(!started) setStarted(true); setHistory(h=>[...h,board]); setBoard(next); setMoves(m=>m+1); }
+      }
+      function undo(){ setHistory(h=>{ if(!h.length) return h; const prev=h[h.length-1]; setBoard(prev); setMoves(m=>Math.max(0,m-1)); return h.slice(0,-1); }); }
+      function copyLink(){ if(typeof window==='undefined') return; const url=new URL(window.location.href); navigator.clipboard?.writeText(url.toString()); }
+
+      useEffect(()=>{
+        function onKey(e){
+          if(won) return;
+          const key=e.key.toLowerCase();
+          if(["arrowup","w"].includes(key)){ e.preventDefault(); handleMove('up'); }
+          else if(["arrowdown","s"].includes(key)){ e.preventDefault(); handleMove('down'); }
+          else if(["arrowleft","a"].includes(key)){ e.preventDefault(); handleMove('left'); }
+          else if(["arrowright","d"].includes(key)){ e.preventDefault(); handleMove('right'); }
+          else if(key==='u'){ e.preventDefault(); undo(); }
+        }
+        window.addEventListener('keydown', onKey);
+        return ()=>window.removeEventListener('keydown', onKey);
+      },[board,size,won]);
+
+      const gridStyle={ gridTemplateColumns:`repeat(${size},minmax(0,1fr))`, gridTemplateRows:`repeat(${size},minmax(0,1fr))` };
+      const {onTouchStart,onTouchEnd}=useSwipe(dir=>handleMove(dir));
+
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 text-slate-100 flex items-center justify-center p-4">
+          <div className="w-full max-w-3xl">
+            <header className="mb-4 flex items-center justify-between">
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Sliding Puzzle ⚙️</h1>
+              <div className="text-sm opacity-80">Shareable seed: <span className="font-mono">{seed}</span></div>
+            </header>
+
+            <div className="grid md:grid-cols-3 gap-4 mb-4">
+              <div className="md:col-span-2 bg-slate-900/50 rounded-2xl p-4 shadow">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex gap-3">
+                    <div className="px-3 py-1 rounded-full bg-slate-800/60">Moves: <span className="font-semibold">{moves}</span></div>
+                    <div className="px-3 py-1 rounded-full bg-slate-800/60">Time: <span className="font-semibold">{formatTime(timeMs)}</span></div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={undo} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-[.98] transition">Undo (U)</button>
+                    <button onClick={()=>resetTo(seed,size)} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-[.98] transition">Reset</button>
+                    <button onClick={newGame} className="px-3 py-1 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:scale-[.98] transition shadow">New Game</button>
+                  </div>
+                </div>
+
+                <div className="aspect-square rounded-2xl bg-slate-800 p-2 md:p-3 select-none touch-pan-y" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+                  <div className="grid gap-2 w-full h-full" style={gridStyle}>
+                    {board.map((val,i)=>{
+                      const isBlank = val===0;
+                      return (
+                        <button key={i}
+                          onClick={()=>{
+                            const next=tryTileClick(board,size,i);
+                            if(next){ if(!started) setStarted(true); setHistory(h=>[...h,board]); setBoard(next); setMoves(m=>m+1); }
+                          }}
+                          disabled={isBlank}
+                          className={[
+                            "rounded-2xl flex items-center justify-center font-bold text-2xl md:text-3xl",
+                            "shadow-inner transition active:scale-[.98]",
+                            isBlank ? "bg-transparent" : "bg-slate-700 hover:bg-slate-600",
+                          ].join(" ")}
+                        >
+                          {!isBlank && <span className="drop-shadow-sm">{val}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <p className="mt-3 text-sm opacity-80">Controls: Click/tap tiles, Arrow keys / WASD, swipe on mobile. Undo with <kbd className="px-1 bg-slate-700 rounded">U</kbd>.</p>
               </div>
-              <div className="flex items-center gap-2">
-                <button onClick={undo} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-[.98] transition">Undo (U)</button>
-                <button onClick={() => resetTo(seed, size)} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-[.98] transition">Reset</button>
-                <button onClick={newGame} className="px-3 py-1 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:scale-[.98] transition shadow">New Game</button>
-              </div>
+
+              <aside className="bg-slate-900/50 rounded-2xl p-4 shadow flex flex-col gap-3">
+                <div>
+                  <h2 className="font-semibold mb-1">Difficulty</h2>
+                  <div className="flex gap-2">
+                    {[3,4,5,6].map(n=>(
+                      <button key={n} onClick={()=>changeSize(n)} className={`px-3 py-1 rounded-xl border ${n===size? 'bg-indigo-600 border-indigo-500':'bg-slate-800 border-slate-700 hover:bg-slate-700'}`}>{n}×{n}</button>
+                    ))}
+                  </div>
+                  <p className="text-xs opacity-70 mt-1">Tip: 4×4 is a classic medium challenge.</p>
+                </div>
+
+                <div>
+                  <h2 className="font-semibold mb-1">Share</h2>
+                  <p className="text-sm opacity-80 mb-2">The URL encodes <span className="font-semibold">size</span> and <span className="font-semibold">seed</span>. Share this link to give friends the exact same puzzle.</p>
+                  <div className="flex gap-2">
+                    <button onClick={copyLink} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700">Copy Link</button>
+                    <button onClick={()=>{ const newSeed=(typeof crypto!=='undefined'&&crypto.getRandomValues)?crypto.getRandomValues(new Uint32Array(1))[0]:Math.random()*1e9|0; resetTo(newSeed,size); }} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700">New Seed</button>
+                  </div>
+                </div>
+
+                <div>
+                  <h2 className="font-semibold mb-1">How to win</h2>
+                  <p className="text-sm opacity-80">Arrange tiles in order from 1 to {size*size-1}, with the blank at the bottom-right.</p>
+                </div>
+
+                <div>
+                  <h2 className="font-semibold mb-1">Hints</h2>
+                  <ul className="text-sm opacity-80 list-disc ml-5 space-y-1">
+                    <li>Solve top rows first, then the leftmost column.</li>
+                    <li>Use Undo to study patterns.</li>
+                    <li>Practice 3×3, then return to 4×4.</li>
+                  </ul>
+                </div>
+              </aside>
             </div>
 
-            <div
-              className="aspect-square rounded-2xl bg-slate-800 p-2 md:p-3 select-none touch-pan-y"
-              onTouchStart={onTouchStart}
-              onTouchEnd={onTouchEnd}
-            >
-              <div className="grid gap-2 w-full h-full" style={gridStyle}>
-                {board.map((val, i) => {
-                  const isBlank = val === 0;
-                  return (
-                    <button
-                      key={i}
-                      onClick={() => {
-                        const next = tryTileClick(board, size, i);
-                        if (next) {
-                          if (!started) setStarted(true);
-                          setHistory((h) => [...h, board]);
-                          setBoard(next);
-                          setMoves((m) => m + 1);
-                        }
-                      }}
-                      disabled={isBlank}
-                      className={[
-                        "rounded-2xl flex items-center justify-center font-bold text-2xl md:text-3xl",
-                        "shadow-inner transition active:scale-[.98]",
-                        isBlank ? "bg-transparent" : "bg-slate-700 hover:bg-slate-600",
-                      ].join(' ')}
-                    >
-                      {!isBlank && <span className="drop-shadow-sm">{val}</span>}
-                    </button>
-                  );
-                })}
+            {won && (
+              <div className="mt-2 p-4 rounded-2xl bg-emerald-700/20 border border-emerald-600">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-semibold text-emerald-300">You solved it! 🎉</h3>
+                    <p className="text-sm opacity-90">Moves: <span className="font-semibold">{moves}</span> · Time: <span className="font-semibold">{formatTime(timeMs)}</span></p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={copyLink} className="px-3 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500">Share Link</button>
+                    <button onClick={newGame} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700">Play Again</button>
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
 
-            <p className="mt-3 text-sm opacity-80">Controls: Click/tap tiles, Arrow keys / WASD to slide, swipe on mobile. Undo with <kbd className="px-1 bg-slate-700 rounded">U</kbd>.</p>
+            <footer className="mt-6 text-xs opacity-60 text-center">
+              Pro tip: press Arrow keys rapidly for speed-running. Built with React.
+            </footer>
           </div>
-
-          <aside className="bg-slate-900/50 rounded-2xl p-4 shadow flex flex-col gap-3">
-            <div>
-              <h2 className="font-semibold mb-1">Difficulty</h2>
-              <div className="flex gap-2">
-                {[3,4,5,6].map((n) => (
-                  <button key={n} onClick={() => changeSize(n)} className={`px-3 py-1 rounded-xl border ${n===size? 'bg-indigo-600 border-indigo-500':'bg-slate-800 border-slate-700 hover:bg-slate-700'}`}>{n}×{n}</button>
-                ))}
-              </div>
-              <p className="text-xs opacity-70 mt-1">Tip: 4×4 is a classic medium challenge.</p>
-            </div>
-
-            <div>
-              <h2 className="font-semibold mb-1">Share</h2>
-              <p className="text-sm opacity-80 mb-2">This page encodes <span className="font-semibold">size</span> and <span className="font-semibold">seed</span> in the URL. Copy the link to share the exact same puzzle.</p>
-              <div className="flex gap-2">
-                <button onClick={copyLink} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700">Copy Link</button>
-                <button onClick={() => {
-                  const newSeed = (typeof crypto !== 'undefined' && crypto.getRandomValues)
-                    ? crypto.getRandomValues(new Uint32Array(1))[0]
-                    : Math.floor(Math.random() * 1e9);
-                  resetTo(newSeed, size);
-                }} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700">New Seed</button>
-              </div>
-            </div>
-
-            <div>
-              <h2 className="font-semibold mb-1">How to win</h2>
-              <p className="text-sm opacity-80">Arrange tiles in order from 1 to {size*size - 1}, with the blank at the bottom-right.</p>
-            </div>
-
-            <div>
-              <h2 className="font-semibold mb-1">Hints</h2>
-              <ul className="text-sm opacity-80 list-disc ml-5 space-y-1">
-                <li>Solve top rows first, then the leftmost column.</li>
-                <li>Use Undo to study patterns.</li>
-                <li>Try the 3×3 to practice, then return to 4×4.</li>
-              </ul>
-            </div>
-          </aside>
         </div>
+      );
+    }
 
-        {won && (
-          <div className="mt-2 p-4 rounded-2xl bg-emerald-700/20 border border-emerald-600">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h3 className="font-semibold text-emerald-300">You solved it! 🎉</h3>
-                <p className="text-sm opacity-90">Moves: <span className="font-semibold">{moves}</span> · Time: <span className="font-semibold">{formatTime(timeMs)}</span></p>
-              </div>
-              <div className="flex gap-2">
-                <button onClick={copyLink} className="px-3 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500">Share Link</button>
-                <button onClick={newGame} className="px-3 py-1 rounded-xl bg-slate-800 hover:bg-slate-700">Play Again</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <footer className="mt-6 text-xs opacity-60 text-center">
-          Pro tip: press Arrow keys rapidly for speed-running. Built with React + Tailwind.
-        </footer>
-      </div>
-    </div>
-  );
-}
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
